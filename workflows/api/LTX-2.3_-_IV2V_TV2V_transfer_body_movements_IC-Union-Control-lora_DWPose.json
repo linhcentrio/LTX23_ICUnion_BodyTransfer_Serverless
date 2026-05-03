@@ -341,19 +341,7 @@
       "title": "Get Image Size"
     }
   },
-  "5034": {
-    "inputs": {
-      "value": "a*32",
-      "a": [
-        "5011",
-        1
-      ]
-    },
-    "class_type": "SimpleMath+",
-    "_meta": {
-      "title": "🔧 Simple Math"
-    }
-  },
+
   "5035": {
     "inputs": {
       "resize_type": "scale longer dimension",
@@ -942,10 +930,7 @@
       "keep_proportion": "crop",
       "pad_color": "0, 0, 0",
       "crop_position": "center",
-      "divisible_by": [
-        "5034",
-        0
-      ],
+      "divisible_by": 32,
       "device": "cpu",
       "image": [
         "5272",
