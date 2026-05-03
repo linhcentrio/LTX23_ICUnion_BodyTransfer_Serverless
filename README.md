@@ -62,9 +62,24 @@ Alternative input methods: `*_base64` (base64-encoded data) or `*_path` (local p
 
 ### Audio
 
+Mặc định worker **không** dùng nhánh `LTXVAudioVAEDecode` (audio do LTX tự tạo trong latent để ghép MP4). Thay vào đó luôn bật nhánh **audio từ input** (mux trong graph API: node `5303 = true` → `5274` → video hoặc file tùy chỉnh).
+
+Thứ tự chọn nguồn âm thanh đi vào pipeline/ghép video:
+
+1. **Custom audio** — có một trong `audio_url` / `audio_base64` / `audio_path`: worker tải file vào `INPUT_DIR`, bật `5274` (dùng file sau `TrimAudioDuration`). Trường hợp này **không** dùng track audio của control video; `use_control_audio` không áp dụng cho nhánh đã chọn file.
+2. **Audio từ control video** — không có custom audio, `use_control_audio = true` (mặc định): `5274` tắt → lấy audio từ `VHS_LoadVideoFFmpeg` (video điều khiển).
+3. **Audio rỗng** — không có custom audio, `use_control_audio = false`: `EmptyAudio` (im lặng), vẫn không dùng LTX decode trừ khi bật cờ dưới đây.
+
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `use_control_audio` | bool | `true` | Use audio from control video |
+| `use_control_audio` | bool | `true` | Lấy audio từ control video khi **không** có custom audio |
+| `use_ltx_native_audio` | bool | `false` | Nếu `true`: dùng audio decode từ latent LTX (`5076`) cho MP4 — **chỉ bật khi cố ý muốn audio do model tự sinh**, không dùng input. Nếu đồng thời có custom audio (`audio_*`) thì vẫn ưu tiên custom, cờ này bị bỏ qua |
+| `audio_url` | string | – | URL file audio custom (mp3/wav/...) |
+| `audio_base64` | string | – | Audio dạng base64 (thay cho `audio_url`) |
+| `audio_path` | string | – | Đường dẫn local trên worker (thay cho `audio_url`) |
+| `audio_filename` | string | `audio.wav` | Gợi ý đuôi file để worker đặt extension đúng (mp3/wav/...) |
+
+> Ghi chú kỹ thuật: workflow API gốc có `LoadAudio` (5263) trỏ `(Verse).mp3`. Handler luôn ghi đè `5263.audio` sang file custom hoặc `silent.wav` placeholder để validate; khi không dùng file custom, nhánh mux vẫn lấy audio từ video (hoặc empty), không đi qua `5076` trừ khi `use_ltx_native_audio: true`.
 
 ### NAG (Normalized Attention Guidance)
 
@@ -168,7 +183,25 @@ Alternative input methods: `*_base64` (base64-encoded data) or `*_path` (local p
 }
 ```
 
-### 5) High quality — landscape, NAG tuning, tăng IC strength
+### 5) Custom audio — gắn nhạc / lời thoại riêng cho video output
+
+```json
+{
+  "input": {
+    "source_image_url": "http://media.aiclip.ai/video/body-transfer-input/test-876d3a52-7af3-46c2-86c2-dcad3d3bdeec/demo3_video---b788bf3f-aca7-4297-8ae3-d8808a425689.mp4",
+    "source_image_filename": "demo3_video.mp4",
+    "control_video_url": "http://media.aiclip.ai/video/body-transfer-input/test-876d3a52-7af3-46c2-86c2-dcad3d3bdeec/demo2_video---6297b4c0-bebe-428b-b177-0623dc74b11c.mp4",
+    "control_video_filename": "demo2_video.mp4",
+    "audio_url": "https://example.com/path/to/song.mp3",
+    "audio_filename": "song.mp3",
+    "prompt": "A person dancing naturally to the music, cinematic quality",
+    "pose_method": "DWPose",
+    "output_format": "minio"
+  }
+}
+```
+
+### 6) High quality — landscape, NAG tuning, tăng IC strength
 
 ```json
 {

@@ -92,9 +92,15 @@ NODE_T2V_MODE = "5198"             # PrimitiveBoolean — text-to-video mode
 NODE_BLEND_SWITCH = "5272"         # ComfySwitchNode — BLEND POSE & DEPTH?
 NODE_BLEND_FACTOR = "5115"         # ImageBlend — blend_factor
 
-# Audio
-NODE_CUSTOM_AUDIO_SWITCH = "5303"  # PrimitiveBoolean — CUSTOM AUDIO INPUT?
-NODE_AUDIO_FROM_VIDEO = "5273"     # ComfySwitchNode — From input video?
+# Audio (API: 5264 lấy audio cho 5208 — switch 5303 False → 5076 LTX decode; True → 5274)
+NODE_CUSTOM_AUDIO_SWITCH = "5303"  # PrimitiveBoolean — bật nhánh audio từ input (5274), tắt = LTX decode
+NODE_CUSTOM_FILE_SWITCH = "5274"   # ComfySwitchNode — From custom audio file? (True=file 5263, False=5273)
+NODE_AUDIO_FROM_VIDEO = "5273"     # ComfySwitchNode — From input video? (True=audio 5192, False=EmptyAudio)
+NODE_LOAD_AUDIO = "5263"           # LoadAudio — luôn trỏ file hợp lệ (custom hoặc silent placeholder)
+
+# Tên file silent.wav placeholder để tránh ComfyUI fail validate node 5263
+# kể cả khi nhánh custom audio không được kích hoạt.
+SILENT_AUDIO_NAME = "silent.wav"
 
 # NAG
 NODE_NAG = "5251"                  # LTX2_NAG — nag_scale, nag_alpha, nag_tau
@@ -174,6 +180,50 @@ def save_base64_to_file(b64: str, output_path: Path) -> Path:
     return output_path
 
 
+def ensure_silent_audio(input_dir: Path, name: str = SILENT_AUDIO_NAME) -> str:
+    """Tạo file silent.wav 1 giây stereo 44.1kHz trong INPUT_DIR (lazy, idempotent).
+
+    Mục đích: ép node LoadAudio (5263) trong workflow JSON luôn trỏ tới một file
+    hợp lệ để ComfyUI validate qua được, kể cả khi nhánh custom audio không kích hoạt.
+    """
+    input_dir.mkdir(parents=True, exist_ok=True)
+    target = input_dir / name
+    if target.is_file() and target.stat().st_size > 0:
+        return name
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+        "-t", "1", "-c:a", "pcm_s16le", str(target),
+    ]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if r.returncode != 0 or not target.is_file():
+            raise RuntimeError(r.stderr.strip() or "ffmpeg trả mã != 0")
+    except Exception as exc:
+        # Fallback: ghi tay header WAV PCM 1 giây stereo (silence)
+        logger.warning("ffmpeg tạo %s thất bại (%s) — dùng fallback ghi WAV thủ công", name, exc)
+        sample_rate = 44100
+        channels = 2
+        bits_per_sample = 16
+        n_samples = sample_rate  # 1s
+        byte_rate = sample_rate * channels * bits_per_sample // 8
+        block_align = channels * bits_per_sample // 8
+        data_size = n_samples * block_align
+        header = b"RIFF" + (36 + data_size).to_bytes(4, "little") + b"WAVE"
+        fmt_chunk = (
+            b"fmt " + (16).to_bytes(4, "little")
+            + (1).to_bytes(2, "little")
+            + channels.to_bytes(2, "little")
+            + sample_rate.to_bytes(4, "little")
+            + byte_rate.to_bytes(4, "little")
+            + block_align.to_bytes(2, "little")
+            + bits_per_sample.to_bytes(2, "little")
+        )
+        data_chunk = b"data" + data_size.to_bytes(4, "little") + (b"\x00" * data_size)
+        target.write_bytes(header + fmt_chunk + data_chunk)
+    return name
+
+
 def fetch_media(job: Dict[str, Any], url_key: str, b64_key: str, path_key: str, dest: Path) -> None:
     if job.get(path_key):
         p = Path(job[path_key])
@@ -238,6 +288,9 @@ def patch_workflow(
     blend_factor: Optional[float] = None,
     # Audio
     use_control_audio: Optional[bool] = None,
+    use_ltx_native_audio: Optional[bool] = None,
+    custom_audio_name: Optional[str] = None,
+    has_custom_audio: bool = False,
     # NAG
     nag_scale: Optional[float] = None,
     nag_alpha: Optional[float] = None,
@@ -303,11 +356,29 @@ def patch_workflow(
         _set(g, NODE_BLEND_FACTOR, "blend_factor", float(blend_factor))
 
     # ── Audio ──
+    # 5263.audio LUÔN cần trỏ tới một file hợp lệ (silent.wav placeholder hoặc
+    # file user cung cấp), nếu không ComfyUI sẽ fail validate cả workflow dù
+    # nhánh custom audio không kích hoạt.
+    if custom_audio_name:
+        _set(g, NODE_LOAD_AUDIO, "audio", custom_audio_name)
+        # Xoá audioUI để tránh ComfyUI tham chiếu ngược tên file cũ trong UI cache
+        if NODE_LOAD_AUDIO in g and isinstance(g[NODE_LOAD_AUDIO].get("inputs"), dict):
+            g[NODE_LOAD_AUDIO]["inputs"].pop("audioUI", None)
+
+    # 5303 → switch của 5264 (Use Selected Audio): True = nhánh 5274 (input mux),
+    # False = 5076 LTXVAudioVAEDecode (audio do LTX tự sinh trong latent).
+    # Mặc định: luôn dùng input (video control hoặc file custom), không dùng LTX decode.
+    # Có custom audio thì luôn ưu tiên nhánh input (bỏ qua use_ltx_native_audio).
+    use_ltx_decode = bool(use_ltx_native_audio) and not has_custom_audio
+    _set(g, NODE_CUSTOM_AUDIO_SWITCH, "value", not use_ltx_decode)
+
+    # 5274: True = dùng audio file (5263→Trim); False = dùng 5273 (video vs EmptyAudio).
+    _set(g, NODE_CUSTOM_FILE_SWITCH, "switch", bool(has_custom_audio))
+
+    # 5273: use_control_audio=True → audio track từ VHS_LoadVideoFFmpeg (5192);
+    # False → EmptyAudio (im lặng). Chỉ áp dụng khi has_custom_audio=False (5274=false).
     if use_control_audio is not None:
-        # switch=true → audio from control video; switch=false → empty audio
         _set(g, NODE_AUDIO_FROM_VIDEO, "switch", bool(use_control_audio))
-        # custom audio input off when using control audio
-        _set(g, NODE_CUSTOM_AUDIO_SWITCH, "value", bool(use_control_audio))
 
     # ── NAG ──
     if nag_scale is not None:
@@ -495,6 +566,7 @@ def extract_params(job_input: Dict[str, Any]) -> Dict[str, Any]:
         "blend_factor": _get_float(job_input, "blend_factor"),
         # Audio
         "use_control_audio": _get_bool(job_input, "use_control_audio"),
+        "use_ltx_native_audio": _get_bool(job_input, "use_ltx_native_audio"),
         # NAG
         "nag_scale": _get_float(job_input, "nag_scale"),
         "nag_alpha": _get_float(job_input, "nag_alpha"),
@@ -530,6 +602,24 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         shutil.copy2(src_tmp, INPUT_DIR / source_name)
         shutil.copy2(ctl_tmp, INPUT_DIR / control_name)
 
+        # ── Custom audio (optional) ─────────────────────────────────────────
+        # Nếu user truyền audio_url/audio_base64/audio_path → dùng làm custom audio
+        # và bật switch 5303. Ngược lại tạo silent.wav placeholder để node 5263
+        # vẫn validate được (kể cả khi nhánh custom không kích hoạt).
+        has_custom_audio = bool(
+            job_input.get("audio_url")
+            or job_input.get("audio_base64")
+            or job_input.get("audio_path")
+        )
+        if has_custom_audio:
+            ext_aud = Path(job_input.get("audio_filename", "audio.wav")).suffix or ".wav"
+            custom_audio_name = f"{job_id}_audio{ext_aud}"
+            aud_tmp = task_dir / "_audio.bin"
+            fetch_media(job_input, "audio_url", "audio_base64", "audio_path", aud_tmp)
+            shutil.copy2(aud_tmp, INPUT_DIR / custom_audio_name)
+        else:
+            custom_audio_name = ensure_silent_audio(INPUT_DIR)
+
         positive = job_input.get("positive_prompt") or job_input.get("prompt")
         negative = job_input.get("negative_prompt")
 
@@ -539,6 +629,8 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
             control_video_name=control_name,
             positive=positive,
             negative=negative,
+            custom_audio_name=custom_audio_name,
+            has_custom_audio=has_custom_audio,
             **params,
         )
 
