@@ -1,6 +1,8 @@
 """
 RunPod Serverless: LTX-2.3 IC-Union body transfer (workflow Studio DWPose/SDPose).
 Kiến trúc tương tự Infinitetalk: ComfyUI + websocket + workflow API + tùy chọn MinIO.
+
+Feature parity với Colab v5: expose ~20 tham số qua job input.
 """
 
 from __future__ import annotations
@@ -9,6 +11,7 @@ import base64
 import json
 import logging
 import os
+import random
 import shutil
 import subprocess
 import time
@@ -23,7 +26,6 @@ import websocket
 
 try:
     from dotenv import load_dotenv
-
     load_dotenv("/app/.env", override=False)
 except ImportError:
     pass
@@ -45,68 +47,98 @@ INPUT_DIR = Path(os.environ.get("COMFY_INPUT_DIR", "/workspace/ComfyUI/input"))
 OUTPUT_DIR = Path(os.environ.get("COMFY_OUTPUT_DIR", "/workspace/ComfyUI/output"))
 API_DIR = Path(os.environ.get("WORKFLOW_API_DIR", "/app/workflows/api"))
 
-# Hai file workflow API đã export (mặc định trùng tên trong workflows/api/)
 _WORKFLOW_DW_DEFAULT = "LTX-2.3_-_IV2V_TV2V_transfer_body_movements_IC-Union-Control-lora_DWPose.json"
 _WORKFLOW_SD_DEFAULT = "LTX-2.3_-_IV2V_TV2V_transfer_body_movements_IC-Union-Control-lora_SDPose.json"
-WORKFLOW_PATH_DWPOSE = Path(
-    os.environ.get("WORKFLOW_PATH_DWPOSE", str(API_DIR / _WORKFLOW_DW_DEFAULT))
-)
-WORKFLOW_PATH_SDPOSE = Path(
-    os.environ.get("WORKFLOW_PATH_SDPOSE", str(API_DIR / _WORKFLOW_SD_DEFAULT))
-)
-
-NODE_LOAD_IMAGE = os.environ.get("NODE_LOAD_IMAGE", "2004")
-NODE_CONTROL_VIDEO = os.environ.get("NODE_CONTROL_VIDEO", "5192")
-NODE_CLIP_POSITIVE = os.environ.get("NODE_CLIP_POSITIVE", "2483")
-NODE_CLIP_NEGATIVE = os.environ.get("NODE_CLIP_NEGATIVE", "2612")
+WORKFLOW_PATH_DWPOSE = Path(os.environ.get("WORKFLOW_PATH_DWPOSE", str(API_DIR / _WORKFLOW_DW_DEFAULT)))
+WORKFLOW_PATH_SDPOSE = Path(os.environ.get("WORKFLOW_PATH_SDPOSE", str(API_DIR / _WORKFLOW_SD_DEFAULT)))
 
 CLIENT_ID = str(uuid.uuid4())
 
+# ── Workflow Node ID Mapping (shared between DWPose & SDPose) ──────────────
+# Input media
+NODE_LOAD_IMAGE = "2004"           # LoadImage — source reference image
+NODE_CONTROL_VIDEO = "5192"        # VHS_LoadVideoFFmpeg — control/driving video
 
+# Prompts
+NODE_PROMPT_TEXT = "5242"          # PrimitiveStringMultiline — raw prompt value
+NODE_CLIP_POSITIVE = "2483"        # CLIPTextEncode (positive) — linked via switch
+NODE_CLIP_NEGATIVE = "2612"        # CLIPTextEncode (negative)
+NODE_ENABLE_ENHANCER = "5201"      # PrimitiveBoolean — enable prompt enhancer
+
+# Resolution / Duration
+NODE_WIDTH = "5206"                # INTConstant — output WIDTH
+NODE_HEIGHT = "5207"               # INTConstant — output HEIGHT
+NODE_LENGTH_SECONDS = "5205"       # INTConstant — LENGTH in seconds
+NODE_FPS = "5199"                  # PrimitiveFloat — FPS
+
+# Sampling
+NODE_SEED_PASS1 = "4832"           # RandomNoise (pass 1)
+NODE_SEED_PASS2 = "5068"           # RandomNoise (pass 2)
+NODE_SAMPLER_PASS1 = "4831"        # KSamplerSelect (pass 1)
+NODE_SAMPLER_PASS2 = "5070"        # KSamplerSelect (pass 2)
+NODE_SIGMAS_PASS1 = "5025"         # ManualSigmas (pass 1)
+NODE_SIGMAS_PASS2 = "5071"         # ManualSigmas (pass 2)
+NODE_CFG_PASS1 = "4828"            # CFGGuider (pass 1)
+NODE_CFG_PASS2 = "5069"            # CFGGuider (pass 2)
+
+# IC-LoRA / Guide
+NODE_IC_LORA = "5011"              # LTXICLoRALoaderModelOnly — ic_strength
+NODE_GUIDE_STRENGTH = "5299"       # PrimitiveFloat — POSE STRENGTH
+NODE_I2V_INPLACE = "5067"          # LTXVImgToVideoInplace — pass 2 re-anchor
+NODE_IMG_PREPROCESS = "3336"       # LTXVPreprocess — img_compression
+NODE_T2V_MODE = "5198"             # PrimitiveBoolean — text-to-video mode
+
+# Pose / Depth blend
+NODE_BLEND_SWITCH = "5272"         # ComfySwitchNode — BLEND POSE & DEPTH?
+NODE_BLEND_FACTOR = "5115"         # ImageBlend — blend_factor
+
+# Audio
+NODE_CUSTOM_AUDIO_SWITCH = "5303"  # PrimitiveBoolean — CUSTOM AUDIO INPUT?
+NODE_AUDIO_FROM_VIDEO = "5273"     # ComfySwitchNode — From input video?
+
+# NAG
+NODE_NAG = "5251"                  # LTX2_NAG — nag_scale, nag_alpha, nag_tau
+
+# Defaults matching Colab v5
+DEFAULT_NEGATIVE = ("low contrast, washed out, text, subtitles, logo, still image, "
+                    "still video, blurry, low quality, distorted, bad anatomy, oversaturated, "
+                    "pixelated, low resolution, grainy, compression artifacts, jpeg artifacts, "
+                    "glitches, watermark, signature, copyright, distortedsound, saturated sound, "
+                    "loud sound, deformed facial features, asymmetrical face, missing facial features, "
+                    "extra limbs, disfigured hands, blurry teeth, disfigured teeth")
+DEFAULT_SIGMAS_PASS1 = "1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0"
+DEFAULT_SIGMAS_PASS2 = "0.85, 0.7250, 0.4219, 0.0"
+
+
+# ── Pose mode helpers ──────────────────────────────────────────────────────
 def _normalize_pose_mode(raw: Any) -> str:
-    """
-    Trả về 'dwpose' hoặc 'sdpose'.
-    Chấp nhận: DWPose, dwpose, SDPose, sdpose, pose_method từ Studio, v.v.
-    """
     if raw is None:
         return "dwpose"
-    s = str(raw).strip().lower()
-    if s in ("sdpose", "sd-pose", "sd_pose") or s.startswith("sdpose"):
-        return "sdpose"
-    if s in ("dwpose", "dw-pose", "dw_pose") or s.startswith("dwpose"):
-        return "dwpose"
-    if "sdpose" in s.replace("-", "").replace("_", ""):
-        return "sdpose"
-    return "dwpose"
-
-
-def workflow_path_for_mode(mode: str) -> Path:
-    return WORKFLOW_PATH_SDPOSE if mode == "sdpose" else WORKFLOW_PATH_DWPOSE
+    s = str(raw).strip().lower().replace("-", "").replace("_", "")
+    return "sdpose" if "sdpose" in s else "dwpose"
 
 
 def resolve_pose_mode_from_job(job_input: Dict[str, Any]) -> str:
-    """Ưu tiên: pose_method -> pose_mode -> workflow (chỉ nhận dwpose|sdpose)."""
-    if "pose_method" in job_input:
-        return _normalize_pose_mode(job_input.get("pose_method"))
-    if "pose_mode" in job_input:
-        return _normalize_pose_mode(job_input.get("pose_mode"))
-    w = job_input.get("workflow")
-    if isinstance(w, str) and w.strip().lower() in ("dwpose", "sdpose"):
-        return w.strip().lower()
+    for key in ("pose_method", "pose_mode", "workflow"):
+        if key in job_input:
+            return _normalize_pose_mode(job_input[key])
     return "dwpose"
 
 
+# ── MinIO ──────────────────────────────────────────────────────────────────
 def _minio_client():
     if Minio is None:
         return None
     endpoint = os.environ.get("MINIO_ENDPOINT", "").strip()
     if not endpoint:
         return None
-    access = os.environ.get("MINIO_ACCESS_KEY", "")
-    secret = os.environ.get("MINIO_SECRET_KEY", "")
-    secure = os.environ.get("MINIO_SECURE", "false").lower() in ("1", "true", "yes")
     try:
-        return Minio(endpoint, access_key=access, secret_key=secret, secure=secure)
+        return Minio(
+            endpoint,
+            access_key=os.environ.get("MINIO_ACCESS_KEY", ""),
+            secret_key=os.environ.get("MINIO_SECRET_KEY", ""),
+            secure=os.environ.get("MINIO_SECURE", "false").lower() in ("1", "true", "yes"),
+        )
     except Exception as exc:
         logger.warning("MinIO không khởi tạo được: %s", exc)
         return None
@@ -116,13 +148,12 @@ MINIO_CLIENT = _minio_client()
 MINIO_BUCKET = os.environ.get("MINIO_BUCKET", "video")
 
 
+# ── File helpers ───────────────────────────────────────────────────────────
 def download_file_from_url(url: str, output_path: Path) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     r = subprocess.run(
         ["wget", "-q", "-O", str(output_path), "--timeout=60", url],
-        capture_output=True,
-        text=True,
-        timeout=600,
+        capture_output=True, text=True, timeout=600,
     )
     if r.returncode != 0:
         raise RuntimeError(f"wget thất bại: {url} {r.stderr}")
@@ -135,9 +166,8 @@ def save_base64_to_file(b64: str, output_path: Path) -> Path:
     pad = len(b64) % 4
     if pad:
         b64 += "=" * (4 - pad)
-    data = base64.b64decode(b64)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_bytes(data)
+    output_path.write_bytes(base64.b64decode(b64))
     return output_path
 
 
@@ -157,43 +187,141 @@ def fetch_media(job: Dict[str, Any], url_key: str, b64_key: str, path_key: str, 
     raise ValueError(f"Cần một trong: {url_key}, {b64_key}, {path_key}")
 
 
+# ── Workflow loading & patching ────────────────────────────────────────────
 def load_workflow_api(pose_mode: str) -> Tuple[Dict[str, Any], Path]:
-    path = workflow_path_for_mode(pose_mode)
+    path = WORKFLOW_PATH_SDPOSE if pose_mode == "sdpose" else WORKFLOW_PATH_DWPOSE
     if not path.is_file():
-        raise FileNotFoundError(
-            f"Thiếu workflow API: {path}. Đặt file export vào {API_DIR} hoặc WORKFLOW_PATH_DWPOSE / WORKFLOW_PATH_SDPOSE."
-        )
+        raise FileNotFoundError(f"Thiếu workflow API: {path}")
     logger.info("Đang tải workflow API: %s (mode=%s)", path.name, pose_mode)
     return json.loads(path.read_text(encoding="utf-8")), path
 
 
+def _set(graph: dict, nid: str, key: str, value: Any) -> None:
+    """Set a node input value, replacing any existing link or value."""
+    if nid not in graph:
+        logger.warning("Node %s không có trong workflow", nid)
+        return
+    if "inputs" not in graph[nid]:
+        graph[nid]["inputs"] = {}
+    graph[nid]["inputs"][key] = value
+
+
 def patch_workflow(
     prompt: Dict[str, Any],
+    *,
     source_image_name: str,
     control_video_name: str,
     positive: Optional[str],
     negative: Optional[str],
+    # Resolution / Duration
+    width: Optional[int] = None,
+    height: Optional[int] = None,
+    length_seconds: Optional[int] = None,
+    fps: Optional[float] = None,
+    # Sampling
+    seed: Optional[int] = None,
+    cfg: Optional[float] = None,
+    sampler_pass1: Optional[str] = None,
+    sampler_pass2: Optional[str] = None,
+    sigmas_pass1: Optional[str] = None,
+    sigmas_pass2: Optional[str] = None,
+    # IC-LoRA / Guide
+    ic_strength: Optional[float] = None,
+    guide_strength: Optional[float] = None,
+    i2v_inplace_strength: Optional[float] = None,
+    img_compression: Optional[int] = None,
+    # Pose / Depth
+    blend_pose_depth: Optional[bool] = None,
+    blend_factor: Optional[float] = None,
+    # Audio
+    use_control_audio: Optional[bool] = None,
+    # NAG
+    nag_scale: Optional[float] = None,
+    nag_alpha: Optional[float] = None,
+    nag_tau: Optional[float] = None,
+    # Misc
+    enable_prompt_enhancer: Optional[bool] = None,
 ) -> Dict[str, Any]:
-    """Ghi đè ảnh nguồn, video điều khiển và prompt (theo node id Studio)."""
-    out = json.loads(json.dumps(prompt))
+    """Patch tất cả tham số tunable vào workflow JSON trước khi gửi ComfyUI."""
+    g = json.loads(json.dumps(prompt))  # deep copy
 
-    def set_if_present(nid: str, key: str, value: Any) -> None:
-        if nid not in out:
-            logger.warning("Không thấy node %s trong workflow API", nid)
-            return
-        if "inputs" not in out[nid]:
-            out[nid]["inputs"] = {}
-        out[nid]["inputs"][key] = value
+    # ── Input media ──
+    _set(g, NODE_LOAD_IMAGE, "image", source_image_name)
+    _set(g, NODE_CONTROL_VIDEO, "video", control_video_name)
 
-    set_if_present(NODE_LOAD_IMAGE, "image", source_image_name)
-    set_if_present(NODE_CONTROL_VIDEO, "video", control_video_name)
+    # ── Prompts ──
     if positive is not None:
-        set_if_present(NODE_CLIP_POSITIVE, "text", positive)
+        _set(g, NODE_PROMPT_TEXT, "value", positive)
+        # Also set directly on CLIPTextEncode in case prompt enhancer is off
+        _set(g, NODE_CLIP_POSITIVE, "text", positive)
     if negative is not None:
-        set_if_present(NODE_CLIP_NEGATIVE, "text", negative)
-    return out
+        _set(g, NODE_CLIP_NEGATIVE, "text", negative)
+
+    # ── Resolution / Duration ──
+    if width is not None:
+        _set(g, NODE_WIDTH, "value", int(width))
+    if height is not None:
+        _set(g, NODE_HEIGHT, "value", int(height))
+    if length_seconds is not None:
+        _set(g, NODE_LENGTH_SECONDS, "value", int(length_seconds))
+    if fps is not None:
+        _set(g, NODE_FPS, "value", float(fps))
+
+    # ── Sampling ──
+    if seed is not None:
+        _set(g, NODE_SEED_PASS1, "noise_seed", int(seed))
+        _set(g, NODE_SEED_PASS2, "noise_seed", int(seed) + 1)
+    if cfg is not None:
+        _set(g, NODE_CFG_PASS1, "cfg", float(cfg))
+        _set(g, NODE_CFG_PASS2, "cfg", float(cfg))
+    if sampler_pass1 is not None:
+        _set(g, NODE_SAMPLER_PASS1, "sampler_name", sampler_pass1)
+    if sampler_pass2 is not None:
+        _set(g, NODE_SAMPLER_PASS2, "sampler_name", sampler_pass2)
+    if sigmas_pass1 is not None:
+        _set(g, NODE_SIGMAS_PASS1, "sigmas", sigmas_pass1)
+    if sigmas_pass2 is not None:
+        _set(g, NODE_SIGMAS_PASS2, "sigmas", sigmas_pass2)
+
+    # ── IC-LoRA / Guide ──
+    if ic_strength is not None:
+        _set(g, NODE_IC_LORA, "strength_model", float(ic_strength))
+    if guide_strength is not None:
+        _set(g, NODE_GUIDE_STRENGTH, "value", float(guide_strength))
+    if i2v_inplace_strength is not None:
+        _set(g, NODE_I2V_INPLACE, "strength", float(i2v_inplace_strength))
+    if img_compression is not None:
+        _set(g, NODE_IMG_PREPROCESS, "img_compression", int(img_compression))
+
+    # ── Pose / Depth blend ──
+    if blend_pose_depth is not None:
+        _set(g, NODE_BLEND_SWITCH, "switch", bool(blend_pose_depth))
+    if blend_factor is not None:
+        _set(g, NODE_BLEND_FACTOR, "blend_factor", float(blend_factor))
+
+    # ── Audio ──
+    if use_control_audio is not None:
+        # switch=true → audio from control video; switch=false → empty audio
+        _set(g, NODE_AUDIO_FROM_VIDEO, "switch", bool(use_control_audio))
+        # custom audio input off when using control audio
+        _set(g, NODE_CUSTOM_AUDIO_SWITCH, "value", bool(use_control_audio))
+
+    # ── NAG ──
+    if nag_scale is not None:
+        _set(g, NODE_NAG, "nag_scale", float(nag_scale))
+    if nag_alpha is not None:
+        _set(g, NODE_NAG, "nag_alpha", float(nag_alpha))
+    if nag_tau is not None:
+        _set(g, NODE_NAG, "nag_tau", float(nag_tau))
+
+    # ── Prompt enhancer ──
+    if enable_prompt_enhancer is not None:
+        _set(g, NODE_ENABLE_ENHANCER, "value", bool(enable_prompt_enhancer))
+
+    return g
 
 
+# ── ComfyUI communication ─────────────────────────────────────────────────
 def queue_prompt(prompt: Dict[str, Any]) -> Dict[str, Any]:
     url = f"http://{SERVER_ADDRESS}:{COMFY_PORT}/prompt"
     payload = json.dumps({"prompt": prompt, "client_id": CLIENT_ID}).encode("utf-8")
@@ -215,7 +343,7 @@ def get_history(prompt_id: str) -> Dict[str, Any]:
 def collect_output_videos(hist: Dict[str, Any], prompt_id: str) -> List[Tuple[str, str]]:
     """Trả về [(đường_dẫn_local, filename), ...]."""
     found: List[Tuple[str, str]] = []
-    chunk = hist.get(prompt_id) if prompt_id in hist else None
+    chunk = hist.get(prompt_id)
     if not chunk:
         return found
     outputs = chunk.get("outputs", {})
@@ -287,6 +415,87 @@ def upload_minio(local_path: str, object_name: str) -> str:
     return f"{scheme}://{ep}/{MINIO_BUCKET}/{object_name}"
 
 
+# ── Job parameter extraction ──────────────────────────────────────────────
+def _get_float(d: dict, *keys, default=None) -> Optional[float]:
+    for k in keys:
+        if k in d and d[k] is not None:
+            try:
+                return float(d[k])
+            except (ValueError, TypeError):
+                pass
+    return default
+
+
+def _get_int(d: dict, *keys, default=None) -> Optional[int]:
+    for k in keys:
+        if k in d and d[k] is not None:
+            try:
+                return int(d[k])
+            except (ValueError, TypeError):
+                pass
+    return default
+
+
+def _get_bool(d: dict, *keys, default=None) -> Optional[bool]:
+    for k in keys:
+        if k in d and d[k] is not None:
+            v = d[k]
+            if isinstance(v, bool):
+                return v
+            if isinstance(v, str):
+                return v.lower() in ("1", "true", "yes")
+            return bool(v)
+    return default
+
+
+def _get_str(d: dict, *keys, default=None) -> Optional[str]:
+    for k in keys:
+        if k in d and d[k] is not None:
+            s = str(d[k]).strip()
+            if s:
+                return s
+    return default
+
+
+def extract_params(job_input: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract tất cả tham số từ job input, trả về dict cho patch_workflow."""
+    seed = _get_int(job_input, "seed", "noise_seed", default=-1)
+    if seed is None or seed < 0:
+        seed = random.randint(0, 2**32 - 1)
+
+    return {
+        # Resolution / Duration
+        "width": _get_int(job_input, "width", "output_width"),
+        "height": _get_int(job_input, "height", "output_height"),
+        "length_seconds": _get_int(job_input, "length_seconds", "duration"),
+        "fps": _get_float(job_input, "fps", "frame_rate"),
+        # Sampling
+        "seed": seed,
+        "cfg": _get_float(job_input, "cfg"),
+        "sampler_pass1": _get_str(job_input, "sampler_pass1", "sampler"),
+        "sampler_pass2": _get_str(job_input, "sampler_pass2"),
+        "sigmas_pass1": _get_str(job_input, "sigmas_pass1"),
+        "sigmas_pass2": _get_str(job_input, "sigmas_pass2"),
+        # IC-LoRA / Guide
+        "ic_strength": _get_float(job_input, "ic_strength"),
+        "guide_strength": _get_float(job_input, "guide_strength", "pose_strength"),
+        "i2v_inplace_strength": _get_float(job_input, "i2v_inplace_strength"),
+        "img_compression": _get_int(job_input, "img_compression"),
+        # Pose / Depth
+        "blend_pose_depth": _get_bool(job_input, "blend_pose_depth"),
+        "blend_factor": _get_float(job_input, "blend_factor"),
+        # Audio
+        "use_control_audio": _get_bool(job_input, "use_control_audio"),
+        # NAG
+        "nag_scale": _get_float(job_input, "nag_scale"),
+        "nag_alpha": _get_float(job_input, "nag_alpha"),
+        "nag_tau": _get_float(job_input, "nag_tau"),
+        # Misc
+        "enable_prompt_enhancer": _get_bool(job_input, "enable_prompt_enhancer"),
+    }
+
+
+# ── Main handler ──────────────────────────────────────────────────────────
 def handler(job: Dict[str, Any]) -> Dict[str, Any]:
     job_input = job.get("input") or {}
     job_id = job.get("id", "job")
@@ -297,6 +506,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         INPUT_DIR.mkdir(parents=True, exist_ok=True)
         pose_mode = resolve_pose_mode_from_job(job_input)
         prompt_template, workflow_path = load_workflow_api(pose_mode)
+        params = extract_params(job_input)
 
         ext_img = Path(job_input.get("source_image_filename", "source.png")).suffix or ".png"
         ext_vid = Path(job_input.get("control_video_filename", "control.mp4")).suffix or ".mp4"
@@ -320,12 +530,13 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
             control_video_name=control_name,
             positive=positive,
             negative=negative,
+            **params,
         )
 
         ws_url = f"ws://{SERVER_ADDRESS}:{COMFY_PORT}/ws?clientId={CLIENT_ID}"
         outputs = wait_ws_and_collect(ws_url, graph)
         if not outputs:
-            return {"status": "error", "error": "Không thu được video từ ComfyUI (kiểm tra history / node VHS_VideoCombine)."}
+            return {"status": "error", "error": "Không thu được video từ ComfyUI."}
 
         local_path, filename = outputs[0]
         output_format = (job_input.get("output_format") or "base64").lower()
@@ -334,7 +545,16 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
             "pose_mode": pose_mode,
             "pose_method": "SDPose" if pose_mode == "sdpose" else "DWPose",
             "workflow_api": workflow_path.name,
+            "seed": params.get("seed"),
+            "width": params.get("width"),
+            "height": params.get("height"),
+            "fps": params.get("fps"),
+            "ic_strength": params.get("ic_strength"),
+            "guide_strength": params.get("guide_strength"),
+            "cfg": params.get("cfg"),
         }
+        # Remove None values from meta
+        meta = {k: v for k, v in meta.items() if v is not None}
 
         if output_format == "minio":
             key = job_input.get("output_key", f"ltx-bodytransfer/{job_id}/{filename}")

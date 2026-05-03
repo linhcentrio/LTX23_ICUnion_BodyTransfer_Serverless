@@ -31,7 +31,9 @@ RUN cd "${COMFY_ROOT}/custom_nodes" \
     && git clone --depth 1 https://github.com/city96/ComfyUI-GGUF.git \
     && git clone --depth 1 https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git \
     && git clone --depth 1 https://github.com/Fannovel16/comfyui_controlnet_aux.git \
-    && git clone --depth 1 https://github.com/Lightricks/ComfyUI-LTXVideo.git
+    && git clone --depth 1 https://github.com/Lightricks/ComfyUI-LTXVideo.git \
+    && git clone --depth 1 https://github.com/yolain/ComfyUI-Easy-Use.git \
+    && git clone --depth 1 https://github.com/rgthree/rgthree-comfy.git
 
 RUN for d in "${COMFY_ROOT}/custom_nodes"/*/; do \
       [ -f "${d}requirements.txt" ] && pip install --no-cache-dir -r "${d}requirements.txt" || true; \
