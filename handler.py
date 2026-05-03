@@ -99,6 +99,9 @@ NODE_AUDIO_FROM_VIDEO = "5273"     # ComfySwitchNode — From input video?
 # NAG
 NODE_NAG = "5251"                  # LTX2_NAG — nag_scale, nag_alpha, nag_tau
 
+# Video output (VHS_VideoCombine) — kết quả LTX cuối (decode từ 5075). Node 5120 chỉ là preview pose (AnimateDiff), không dùng làm output.
+NODE_FINAL_VIDEO_COMBINE = "5208"
+
 # Defaults matching Colab v5
 DEFAULT_NEGATIVE = ("low contrast, washed out, text, subtitles, logo, still image, "
                     "still video, blurry, low quality, distorted, bad anatomy, oversaturated, "
@@ -341,31 +344,37 @@ def get_history(prompt_id: str) -> Dict[str, Any]:
 
 
 def collect_output_videos(hist: Dict[str, Any], prompt_id: str) -> List[Tuple[str, str]]:
-    """Trả về [(đường_dẫn_local, filename), ...]."""
-    found: List[Tuple[str, str]] = []
+    """Chỉ trả về video từ node 5208 (pipeline LTX cuối). Không trả preview pose (5120 / AnimateDiff)."""
     chunk = hist.get(prompt_id)
     if not chunk:
-        return found
+        return []
     outputs = chunk.get("outputs", {})
-    for _node_id, node_out in outputs.items():
-        for key in ("gifs", "videos", "images"):
-            if key not in node_out:
+    final: List[Tuple[str, str]] = []
+    node_out = None
+    for nid, out in outputs.items():
+        if str(nid) == NODE_FINAL_VIDEO_COMBINE:
+            node_out = out
+            break
+    if not node_out:
+        return []
+    for key in ("gifs", "videos", "images"):
+        if key not in node_out:
+            continue
+        for item in node_out[key]:
+            fn = item.get("filename")
+            sub = item.get("subfolder", "")
+            if not fn:
                 continue
-            for item in node_out[key]:
-                fn = item.get("filename")
-                sub = item.get("subfolder", "")
-                if not fn:
-                    continue
-                candidates = [
-                    OUTPUT_DIR / sub / fn if sub else OUTPUT_DIR / fn,
-                    Path("/workspace/ComfyUI/temp") / fn,
-                    Path(fn),
-                ]
-                for p in candidates:
-                    if p.is_file():
-                        found.append((str(p), fn))
-                        break
-    return found
+            candidates = [
+                OUTPUT_DIR / sub / fn if sub else OUTPUT_DIR / fn,
+                Path("/workspace/ComfyUI/temp") / fn,
+                Path(fn),
+            ]
+            for p in candidates:
+                if p.is_file():
+                    final.append((str(p), fn))
+                    break
+    return final
 
 
 def wait_ws_and_collect(ws_url: str, prompt: Dict[str, Any]) -> List[Tuple[str, str]]:
@@ -536,7 +545,13 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         ws_url = f"ws://{SERVER_ADDRESS}:{COMFY_PORT}/ws?clientId={CLIENT_ID}"
         outputs = wait_ws_and_collect(ws_url, graph)
         if not outputs:
-            return {"status": "error", "error": "Không thu được video từ ComfyUI."}
+            return {
+                "status": "error",
+                "error": (
+                    "Không có video LTX từ node 5208 (pipeline sinh cuối). "
+                    "Thường do UNET/LoRA/VAE không load được hoặc prompt lỗi — không dùng preview pose (AnimateDiff)."
+                ),
+            }
 
         local_path, filename = outputs[0]
         output_format = (job_input.get("output_format") or "base64").lower()

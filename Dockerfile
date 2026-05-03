@@ -40,9 +40,13 @@ RUN for d in "${COMFY_ROOT}/custom_nodes"/*/; do \
     done
 
 # Model paths khớp workflow Studio (tên file trong JSON)
-RUN mkdir -p "${COMFY_ROOT}/models/unet/LTXvideo/LTX-2/quantstack" \
-    && wget -q -O "${COMFY_ROOT}/models/unet/LTXvideo/LTX-2/quantstack/LTX-2.3-distilled-Q4_K_S.gguf" \
-      "https://huggingface.co/QuantStack/LTX-2.3-GGUF/resolve/main/LTX-2.3-distilled/LTX-2.3-distilled-Q4_K_S.gguf"
+# UNET fp8 bắt buộc cho node 5130 (IC-LoRA + sampler → video cuối 5208); ~25GB
+RUN mkdir -p "${COMFY_ROOT}/models/unet/LTXVideo/v2" \
+    && wget -q -O "${COMFY_ROOT}/models/unet/LTXVideo/v2/ltx-2.3-22b-distilled-1.1_transformer_only_fp8_scaled.safetensors" \
+      "https://huggingface.co/Kijai/LTX2.3_comfy/resolve/main/diffusion_models/ltx-2.3-22b-distilled-1.1_transformer_only_fp8_scaled.safetensors"
+
+# UNET GGUF (node 5229 UnetLoaderGGUF): mặc định không tải để giảm kích thước image — workflow chính dùng fp8 (5130).
+# Khi cần: thêm RUN wget vào models/unet/LTXvideo/LTX-2/quantstack/LTX-2.3-distilled-Q4_K_S.gguf (QuantStack/LTX-2.3-GGUF).
 
 RUN mkdir -p "${COMFY_ROOT}/models/clip" \
     && wget -q -O "${COMFY_ROOT}/models/clip/gemma_3_12B_it_fp8_scaled.safetensors" \
@@ -77,6 +81,11 @@ RUN mkdir -p "${AUX_ANNOTATOR_CKPTS_PATH}/yzd-v/DWPose" \
       "https://huggingface.co/yzd-v/DWPose/resolve/main/yolox_l.onnx" \
     && wget -q -O "${AUX_ANNOTATOR_CKPTS_PATH}/yzd-v/DWPose/dw-ll_ucoco_384.onnx" \
       "https://huggingface.co/yzd-v/DWPose/resolve/main/dw-ll_ucoco_384.onnx"
+
+# TorchScript pose (workflow DWPreprocessor: dw-ll_ucoco_384_bs5.torchscript.pt) — tránh tải lúc chạy
+RUN mkdir -p "${AUX_ANNOTATOR_CKPTS_PATH}/hr16/DWPose-TorchScript-BatchSize5" \
+    && wget -q -O "${AUX_ANNOTATOR_CKPTS_PATH}/hr16/DWPose-TorchScript-BatchSize5/dw-ll_ucoco_384_bs5.torchscript.pt" \
+      "https://huggingface.co/hr16/DWPose-TorchScript-BatchSize5/resolve/main/dw-ll_ucoco_384_bs5.torchscript.pt"
 
 RUN mkdir -p "${AUX_ANNOTATOR_CKPTS_PATH}/lllyasviel/Annotators" \
     && wget -q -O "${AUX_ANNOTATOR_CKPTS_PATH}/lllyasviel/Annotators/depth_anything_vitl14.pth" \

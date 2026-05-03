@@ -232,7 +232,7 @@
   },
   "5011": {
     "inputs": {
-      "lora_name": "LTX\\LTX-2\\IC-Lora\\ltx-2.3-22b-v1.1-ic-lora-union-control-ref0.5.safetensors",
+      "lora_name": "LTX/LTX-2/IC-Lora/ltx-2.3-22b-v1.1-ic-lora-union-control-ref0.5.safetensors",
       "strength_model": 0.71,
       "model": [
         "5130",
@@ -699,7 +699,7 @@
   },
   "5129": {
     "inputs": {
-      "vae_name": "vae_approx\\taeltx2_3.safetensors"
+      "vae_name": "vae_approx/taeltx2_3.safetensors"
     },
     "class_type": "VAELoader",
     "_meta": {
@@ -708,7 +708,7 @@
   },
   "5130": {
     "inputs": {
-      "unet_name": "LTXVideo\\v2\\ltx-2.3-22b-distilled-1.1_transformer_only_fp8_scaled.safetensors",
+      "unet_name": "LTXVideo/v2/ltx-2.3-22b-distilled-1.1_transformer_only_fp8_scaled.safetensors",
       "weight_dtype": "default"
     },
     "class_type": "UNETLoader",
@@ -930,7 +930,10 @@
       "keep_proportion": "crop",
       "pad_color": "0, 0, 0",
       "crop_position": "center",
-      "divisible_by": 32,
+      "divisible_by": [
+        "5304",
+        1
+      ],
       "device": "cpu",
       "image": [
         "5272",
@@ -955,7 +958,7 @@
   },
   "5229": {
     "inputs": {
-      "unet_name": "LTXvideo\\LTX-2\\quantstack\\LTX-2.3-distilled-Q4_K_S.gguf"
+      "unet_name": "LTXvideo/LTX-2/quantstack/LTX-2.3-distilled-Q4_K_S.gguf"
     },
     "class_type": "UnetLoaderGGUF",
     "_meta": {
@@ -1272,6 +1275,19 @@
     "class_type": "PrimitiveBoolean",
     "_meta": {
       "title": "CUSTOM AUDIO INPUT?"
+    }
+  },
+  "5304": {
+    "inputs": {
+      "expression": "a * 32",
+      "variables.a": [
+        "5011",
+        1
+      ]
+    },
+    "class_type": "SimpleCalculatorKJ",
+    "_meta": {
+      "title": "divisible_by = latent_downscale * 32 (thay SimpleMath+)"
     }
   },
   "5237:1623": {

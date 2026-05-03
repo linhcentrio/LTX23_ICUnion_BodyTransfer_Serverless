@@ -81,22 +81,119 @@ Alternative input methods: `*_base64` (base64-encoded data) or `*_path` (local p
 | `output_format` | string | `base64` | `base64` or `minio` |
 | `output_key` | string | auto | MinIO object key (when format=minio) |
 
-## Example Request
+## Example Requests
+
+### 1) Minimal — chỉ cần source + control + prompt
 
 ```json
 {
   "input": {
-    "source_image_url": "https://example.com/person.jpg",
-    "control_video_url": "https://example.com/dance.mp4",
-    "prompt": "A person dancing energetically with fluid motion",
+    "source_image_url": "http://media.aiclip.ai/video/body-transfer-input/test-876d3a52-7af3-46c2-86c2-dcad3d3bdeec/demo3_video---b788bf3f-aca7-4297-8ae3-d8808a425689.mp4",
+    "source_image_filename": "demo3_video.mp4",
+    "control_video_url": "http://media.aiclip.ai/video/body-transfer-input/test-876d3a52-7af3-46c2-86c2-dcad3d3bdeec/demo2_video---6297b4c0-bebe-428b-b177-0623dc74b11c.mp4",
+    "control_video_filename": "demo2_video.mp4",
+    "prompt": "A person dancing naturally, same identity and appearance from the source reference, realistic motion transfer, high quality video",
+    "negative_prompt": "low quality, blurry, distorted body, deformed hands, bad anatomy, artifacts",
+    "pose_method": "DWPose",
+    "output_format": "minio"
+  }
+}
+```
+
+### 2) Full parameters — seed, resolution, sampling, IC-LoRA tuning
+
+```json
+{
+  "input": {
+    "source_image_url": "http://media.aiclip.ai/video/body-transfer-input/test-876d3a52-7af3-46c2-86c2-dcad3d3bdeec/demo3_video---b788bf3f-aca7-4297-8ae3-d8808a425689.mp4",
+    "source_image_filename": "demo3_video.mp4",
+    "control_video_url": "http://media.aiclip.ai/video/body-transfer-input/test-876d3a52-7af3-46c2-86c2-dcad3d3bdeec/demo2_video---6297b4c0-bebe-428b-b177-0623dc74b11c.mp4",
+    "control_video_filename": "demo2_video.mp4",
+    "prompt": "A person dancing naturally, same identity and appearance from the source reference, realistic motion transfer, high quality video",
+    "negative_prompt": "low quality, blurry, distorted body, deformed hands, bad anatomy, artifacts",
+    "pose_method": "DWPose",
+    "seed": 42,
     "width": 768,
     "height": 1280,
+    "length_seconds": 10,
     "fps": 24,
-    "seed": 42,
+    "cfg": 1.0,
     "ic_strength": 0.71,
     "guide_strength": 0.7,
+    "i2v_inplace_strength": 0.7,
+    "img_compression": 18,
+    "sampler_pass1": "euler_ancestral_cfg_pp",
+    "sampler_pass2": "euler_cfg_pp",
+    "use_control_audio": true,
+    "output_format": "minio"
+  }
+}
+```
+
+### 3) SDPose — dùng SDPose thay DWPose
+
+```json
+{
+  "input": {
+    "source_image_url": "http://media.aiclip.ai/video/body-transfer-input/test-876d3a52-7af3-46c2-86c2-dcad3d3bdeec/demo3_video---b788bf3f-aca7-4297-8ae3-d8808a425689.mp4",
+    "source_image_filename": "demo3_video.mp4",
+    "control_video_url": "http://media.aiclip.ai/video/body-transfer-input/test-876d3a52-7af3-46c2-86c2-dcad3d3bdeec/demo2_video---6297b4c0-bebe-428b-b177-0623dc74b11c.mp4",
+    "control_video_filename": "demo2_video.mp4",
+    "prompt": "A person dancing naturally, same identity and appearance from the source reference, realistic motion transfer, high quality video",
+    "pose_method": "SDPose",
+    "seed": 123,
+    "width": 736,
+    "height": 1280,
+    "output_format": "minio"
+  }
+}
+```
+
+### 4) Pose + Depth blend — thêm depth map cho guide chính xác hơn
+
+```json
+{
+  "input": {
+    "source_image_url": "http://media.aiclip.ai/video/body-transfer-input/test-876d3a52-7af3-46c2-86c2-dcad3d3bdeec/demo3_video---b788bf3f-aca7-4297-8ae3-d8808a425689.mp4",
+    "source_image_filename": "demo3_video.mp4",
+    "control_video_url": "http://media.aiclip.ai/video/body-transfer-input/test-876d3a52-7af3-46c2-86c2-dcad3d3bdeec/demo2_video---6297b4c0-bebe-428b-b177-0623dc74b11c.mp4",
+    "control_video_filename": "demo2_video.mp4",
+    "prompt": "A person dancing naturally, same identity and appearance from the source reference, realistic motion transfer, high quality video",
     "pose_method": "DWPose",
-    "use_control_audio": true
+    "blend_pose_depth": true,
+    "blend_factor": 0.5,
+    "seed": -1,
+    "output_format": "minio"
+  }
+}
+```
+
+### 5) High quality — landscape, NAG tuning, tăng IC strength
+
+```json
+{
+  "input": {
+    "source_image_url": "http://media.aiclip.ai/video/body-transfer-input/test-876d3a52-7af3-46c2-86c2-dcad3d3bdeec/demo3_video---b788bf3f-aca7-4297-8ae3-d8808a425689.mp4",
+    "source_image_filename": "demo3_video.mp4",
+    "control_video_url": "http://media.aiclip.ai/video/body-transfer-input/test-876d3a52-7af3-46c2-86c2-dcad3d3bdeec/demo2_video---6297b4c0-bebe-428b-b177-0623dc74b11c.mp4",
+    "control_video_filename": "demo2_video.mp4",
+    "prompt": "A person dancing naturally, same identity and appearance from the source reference, realistic motion transfer, cinematic quality",
+    "negative_prompt": "low quality, blurry, distorted body, deformed hands, bad anatomy, artifacts, jitter, flicker",
+    "pose_method": "DWPose",
+    "seed": 777,
+    "width": 1280,
+    "height": 736,
+    "length_seconds": 5,
+    "fps": 24,
+    "ic_strength": 0.8,
+    "guide_strength": 0.75,
+    "cfg": 1.0,
+    "nag_scale": 11.0,
+    "nag_alpha": 0.25,
+    "nag_tau": 2.5,
+    "use_control_audio": true,
+    "enable_prompt_enhancer": true,
+    "output_format": "minio"
   }
 }
 ```
