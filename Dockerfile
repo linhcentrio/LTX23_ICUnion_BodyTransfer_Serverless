@@ -21,7 +21,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /workspace
 
-RUN git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git "${COMFY_ROOT}" \
+# Pin commits theo Colab v5 đã chạy ổn (để tránh lệch ComfyUI core ↔ LTXVideo khi build lại).
+ARG COMFYUI_COMMIT=f3ea976cba8743a87efeb9fbca717309e3d65c47
+ARG LTXVIDEO_COMMIT=2acf7af8991f33b5cc06ec26753cb6e88e057d04
+
+RUN git clone https://github.com/comfyanonymous/ComfyUI.git "${COMFY_ROOT}" \
+    && cd "${COMFY_ROOT}" \
+    && git checkout "${COMFYUI_COMMIT}" \
     && pip install --no-cache-dir -r "${COMFY_ROOT}/requirements.txt" \
     && pip install --no-cache-dir onnxruntime-gpu
 
@@ -31,7 +37,10 @@ RUN cd "${COMFY_ROOT}/custom_nodes" \
     && git clone --depth 1 https://github.com/city96/ComfyUI-GGUF.git \
     && git clone --depth 1 https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite.git \
     && git clone --depth 1 https://github.com/Fannovel16/comfyui_controlnet_aux.git \
-    && git clone --depth 1 https://github.com/Lightricks/ComfyUI-LTXVideo.git \
+    && git clone https://github.com/Lightricks/ComfyUI-LTXVideo.git \
+    && cd "${COMFY_ROOT}/custom_nodes/ComfyUI-LTXVideo" \
+    && git checkout "${LTXVIDEO_COMMIT}" \
+    && cd "${COMFY_ROOT}/custom_nodes" \
     && git clone --depth 1 https://github.com/yolain/ComfyUI-Easy-Use.git \
     && git clone --depth 1 https://github.com/rgthree/rgthree-comfy.git
 

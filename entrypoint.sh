@@ -4,6 +4,9 @@ set -euo pipefail
 export PYTHONUNBUFFERED=1
 export AUX_ANNOTATOR_CKPTS_PATH="${AUX_ANNOTATOR_CKPTS_PATH:-/workspace/ComfyUI/custom_nodes/comfyui_controlnet_aux/ckpts}"
 
+# comfyui_controlnet_aux / huggingface_hub đôi khi cache vào custom_tmp=/tmp và cần thư mục ckpts con
+mkdir -p /tmp/ckpts
+
 echo "[entrypoint] Khởi động ComfyUI..."
 cd /workspace/ComfyUI
 python main.py --listen 127.0.0.1 --port "${COMFY_PORT:-8188}" &
