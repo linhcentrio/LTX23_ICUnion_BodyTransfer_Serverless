@@ -240,6 +240,42 @@ def fetch_media(job: Dict[str, Any], url_key: str, b64_key: str, path_key: str, 
     raise ValueError(f"Cần một trong: {url_key}, {b64_key}, {path_key}")
 
 
+def normalize_source_image_to_png(src_path: Path, dst_path: Path) -> None:
+    """Ép ảnh nguồn về một frame PNG tĩnh.
+
+    Cần thiết vì ComfyUI ``LoadImage`` dùng ``PIL.ImageSequence.Iterator`` và
+    nếu user submit animated GIF/WebP/multi-frame TIFF, node sẽ trả về batch
+    nhiều frame. Khi đó ``LTXVImgToVideoConditionOnly``/``LTXVImgToVideoInplace``
+    sẽ VAE-encode ra latent ``t`` có ``T = (N-1)//8 + 1`` frame thay vì 1, và
+    crash ngay tại ``samples[:, :, :t.shape[2]] = t`` với lỗi
+    ``RuntimeError: The expanded size of the tensor (X) must match the
+    existing size (Y) at non-singleton dimension 2``.
+    """
+    try:
+        from PIL import Image, ImageSequence  # noqa: F401  (ImageSequence dùng để chắc chắn module có)
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError(
+            "Pillow chưa được cài. Cài lại image base hoặc thêm 'Pillow' vào requirements.txt."
+        ) from exc
+
+    dst_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with Image.open(src_path) as im:
+            n_frames = getattr(im, "n_frames", 1)
+            if n_frames > 1:
+                logger.warning(
+                    "source_image có %s frame (animated/multi-frame). Lấy frame đầu tiên để tránh tensor mismatch.",
+                    n_frames,
+                )
+                im.seek(0)
+            rgb = im.convert("RGB")
+            rgb.save(dst_path, format="PNG", optimize=False)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Không decode được source_image: {exc}. Hãy gửi ảnh tĩnh PNG/JPG hợp lệ."
+        ) from exc
+
+
 # ── Workflow loading & patching ────────────────────────────────────────────
 def load_workflow_api(pose_mode: str) -> Tuple[Dict[str, Any], Path]:
     path = WORKFLOW_PATH_SDPOSE if pose_mode == "sdpose" else WORKFLOW_PATH_DWPOSE
@@ -589,9 +625,11 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         prompt_template, workflow_path = load_workflow_api(pose_mode)
         params = extract_params(job_input)
 
-        ext_img = Path(job_input.get("source_image_filename", "source.png")).suffix or ".png"
         ext_vid = Path(job_input.get("control_video_filename", "control.mp4")).suffix or ".mp4"
-        source_name = f"{job_id}_source{ext_img}"
+        # source_image LUÔN ép sang PNG single-frame để tránh trường hợp user
+        # gửi animated GIF/WebP/TIFF → ComfyUI LoadImage trả batch nhiều frame
+        # → tensor mismatch trong LTXVImgToVideoConditionOnly.
+        source_name = f"{job_id}_source.png"
         control_name = f"{job_id}_control{ext_vid}"
 
         src_tmp = task_dir / "_source.bin"
@@ -599,7 +637,7 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         fetch_media(job_input, "source_image_url", "source_image_base64", "source_image_path", src_tmp)
         fetch_media(job_input, "control_video_url", "control_video_base64", "control_video_path", ctl_tmp)
 
-        shutil.copy2(src_tmp, INPUT_DIR / source_name)
+        normalize_source_image_to_png(src_tmp, INPUT_DIR / source_name)
         shutil.copy2(ctl_tmp, INPUT_DIR / control_name)
 
         # ── Custom audio (optional) ─────────────────────────────────────────

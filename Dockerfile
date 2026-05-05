@@ -48,6 +48,12 @@ RUN for d in "${COMFY_ROOT}/custom_nodes"/*/; do \
       [ -f "${d}requirements.txt" ] && pip install --no-cache-dir -r "${d}requirements.txt" || true; \
     done
 
+# comfyui_controlnet_aux (DWPose) cần onnxruntime có CUDAExecutionProvider.
+# Một số custom_nodes có thể kéo dependency 'onnxruntime' (CPU) và cài đè lên.
+# Ép cuối cùng luôn là bản GPU để tránh fallback sang OpenCV/CPU.
+RUN pip uninstall -y onnxruntime onnxruntime-silicon onnxruntime-directml || true \
+    && pip install --no-cache-dir --upgrade onnxruntime-gpu
+
 # Model paths khớp workflow Studio (tên file trong JSON)
 RUN mkdir -p "${COMFY_ROOT}/models/unet/LTXvideo/LTX-2/quantstack" \
     && wget -q -O "${COMFY_ROOT}/models/unet/LTXvideo/LTX-2/quantstack/LTX-2.3-distilled-Q4_K_S.gguf" \

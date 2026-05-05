@@ -237,6 +237,14 @@ Thứ tự chọn nguồn âm thanh đi vào pipeline/ghép video:
 docker build -t ltx-bodytransfer-serverless .
 ```
 
+## HuggingFace token (khuyến nghị)
+
+Một số node (ví dụ DWPose weights / model phụ trợ) có thể tải từ HuggingFace Hub khi thiếu file trong cache.
+Nếu không set token, request sẽ ở chế độ unauthenticated và dễ bị giới hạn tốc độ.
+
+- Cách 1: set environment variable `HF_TOKEN` trong RunPod endpoint
+- Cách 2: tạo file `.env` dựa trên `.env.example` và điền `HF_TOKEN` (worker tự load `/app/.env`)
+
 ## Custom Nodes Included
 
 - ComfyUI-KJNodes
